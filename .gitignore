@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+out/
+
+# Vite / bundler caches
+.vite/
+.cache/
+
+# Source maps / generated files
+*.map
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+Thumbs.db
+Desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Test / coverage output
+coverage/
+.nyc_output/
+
+# Extension packaging
+*.crx
+*.xpi
+*.zip
+
+# Local/private extension files
+local/
+private/
+secrets/
+
+# Personal notes / scratch files
+scratch/
+tmp/

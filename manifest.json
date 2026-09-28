@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Telegram Media Downloader",
+  "version": "0.1.0",
+  "description": "Personal Telegram Web media downloader.",
+  "content_scripts": [
+    {
+      "matches": ["https://web.telegram.org/*"],
+      "js": ["src/downloader.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/page-bridge.js"],
+      "matches": ["https://web.telegram.org/*"]
+    }
+  ]
+}
