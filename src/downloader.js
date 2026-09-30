@@ -79,6 +79,26 @@
     return name;
   }
 
+  function assertMediaMime(media, value) {
+    const mimeType = String(value || "").split(";")[0].trim().toLowerCase();
+    if (!mimeType) return;
+    if (mimeType === "application/octet-stream") {
+      if (media.type === "video" || media.type === "animation") {
+        throw new Error("Telegram did not expose a verifiable video MIME type; refusing to download an ambiguous resource");
+      }
+      return;
+    }
+    if ((media.type === "video" || media.type === "animation") && !["video/mp4", "video/webm"].includes(mimeType)) {
+      throw new Error("The resolved resource is not a video; refusing to download a thumbnail or unrelated file");
+    }
+    if (media.type === "image" && !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mimeType)) {
+      throw new Error("The resolved resource is not a supported image");
+    }
+    if (media.type === "document" && (mimeType.startsWith("video/") || mimeType.startsWith("image/"))) {
+      throw new Error("The resolved resource does not match the document media type");
+    }
+  }
+
   async function createSink(downloadId) {
     try {
       const root = await navigator.storage.getDirectory();
@@ -130,6 +150,7 @@
     try {
       let response = await getChunk(0, CHUNK_SIZE - 1);
       if (response.contentType && response.contentType !== "application/octet-stream") actualMime = response.contentType.split(";")[0].toLowerCase();
+      assertMediaMime(media, actualMime);
       if (response.status === 200 && response.data?.byteLength) {
         totalSize = response.data.byteLength;
         await sink.write(response.data);
@@ -153,6 +174,7 @@
           const end = Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
           response = await getChunk(start, end);
           if (response.status !== 206) throw new Error(`Range request returned HTTP ${response.status}, expected 206`);
+          if (response.contentType && response.contentType !== "application/octet-stream") assertMediaMime(media, response.contentType);
           parseContentRange(response.contentRange, start, end);
           const expected = end - start + 1;
           if (response.data.byteLength !== expected || response.contentLength !== expected) throw new Error("Downloaded chunk is incomplete");
@@ -178,6 +200,7 @@
     const info = await withRetry(() => bridgeRequest("BLOB_INFO", { url: media.url, start: 0, downloadId }, signal), signal, "Blob read");
     const totalSize = info.size;
     if (!Number.isSafeInteger(totalSize) || totalSize <= 0) throw new Error("Invalid Blob size");
+    assertMediaMime(media, info.contentType);
     const sink = await createSink(downloadId);
     try {
       for (let start = 0; start < totalSize; start += CHUNK_SIZE) {
