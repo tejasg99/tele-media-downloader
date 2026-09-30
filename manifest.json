@@ -6,7 +6,7 @@
   "content_scripts": [
     {
       "matches": ["https://web.telegram.org/*"],
-      "js": ["src/downloader.js", "src/content.js"],
+      "js": ["src/media-detector.js", "src/downloader.js", "src/content.js"],
       "run_at": "document_idle"
     }
   ],
