@@ -107,6 +107,16 @@
     return animationHint ? "animation" : "video";
   }
 
+  function isLazyVideoPlaceholder(element) {
+    if (!(element instanceof HTMLImageElement) || !element.classList.contains("media-photo")) return false;
+    const container = element.closest(".attachment.media-container");
+    if (!container) return false;
+    const hasPlayControl = !!container.querySelector(".video-play");
+    const hasDuration = !!container.querySelector(".video-time");
+    const hasVideo = !!container.querySelector("video");
+    return hasPlayControl && hasDuration && !hasVideo ? container : null;
+  }
+
   function filenameFromElement(element, mimeType) {
     const candidates = [element.getAttribute("download"), element.getAttribute("data-filename"), element.getAttribute("title")];
     for (const candidate of candidates) {
@@ -115,7 +125,7 @@
     return `${Date.now()}.${EXTENSIONS[mimeType] || "bin"}`;
   }
 
-  function makeDescriptor(element, message, mediaType, resolved = null) {
+  function makeDescriptor(element, message, mediaType, resolved = null, extra = {}) {
     const source = resolved || null;
     const type = mediaType;
     const mimeType = source?.mimeType || (type === "video" || type === "animation" ? "video/mp4" : "");
@@ -124,7 +134,7 @@
       type, sourceType, url: source?.url || "", mimeType,
       filename: filenameFromElement(element, mimeType),
       size: Number(element.getAttribute("data-size")) || null,
-      element, message
+      element, message, ...extra
     });
   }
 
@@ -144,6 +154,14 @@
       return makeDescriptor(element, message, type);
     }
     if (tag === "IMG") {
+      const lazyVideoContainer = isLazyVideoPlaceholder(element);
+      if (lazyVideoContainer) {
+        return makeDescriptor(element, message, "video", null, {
+          activationTarget: element,
+          mediaContainer: lazyVideoContainer,
+          lazyVideo: true
+        });
+      }
       if (element.closest("video, picture source,[class*='video-thumbnail'],[class*='video-poster'],[class*='video-preview']")) return null;
       const mediaItem = element.closest(".media-container,.media-item,[class*='media-item'],.attachment");
       if (mediaItem?.querySelector("video")) return null;
@@ -198,6 +216,7 @@
     findMessageContainers: messageContainersWithin,
     findMessageContainer,
     getVideoCandidates,
+    isLazyVideoPlaceholder,
     validSource,
     detect,
     scan
