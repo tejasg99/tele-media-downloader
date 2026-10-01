@@ -52,7 +52,8 @@
   function waitForViewerVideo(mediaType, timeoutMs, signal) {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const startedAt = Date.now();
+      let loggedViewer = false;
+      let loggedVideo = false;
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
@@ -68,29 +69,53 @@
         if (settled) return;
         const viewer = findViewer();
         if (viewer) {
-          for (const video of viewerVideos(viewer)) {
+          if (!loggedViewer) {
+            loggedViewer = true;
+            console.info("[TG CONTENT] Media viewer detected");
+          }
+          const videos = viewerVideos(viewer);
+          if (videos.length && !loggedVideo) {
+            loggedVideo = true;
+            console.info("[TG CONTENT] Viewer video detected");
+          }
+          for (const video of videos) {
             const source = sourceFromVideo(video, mediaType);
             if (source) {
-              console.info(`[TG CONTENT] Viewer source resolved; sourceType: ${source.sourceType}; mediaType: ${mediaType}; mimeType: ${source.mimeType}`);
+              console.info(`[TG CONTENT] Viewer video source resolved; sourceType: ${source.sourceType}; mediaType: ${mediaType}; mimeType: ${source.mimeType}`);
               finish(null, source);
               return;
             }
           }
         }
-        if (Date.now() - startedAt >= timeoutMs) finish(new Error("Could not resolve the actual video source from Telegram's media viewer"));
       };
       const observer = new MutationObserver(check);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "class", "style"] });
       document.addEventListener("loadedmetadata", check, true);
       document.addEventListener("canplay", check, true);
       signal?.addEventListener("abort", cancel, { once: true });
-      const timeout = setTimeout(() => finish(new Error("Timed out waiting for Telegram's media viewer video source")), timeoutMs);
+      const timeout = setTimeout(() => {
+        if (!findViewer()) finish(new Error("Could not open Telegram media viewer for this video."));
+        else if (!viewerVideos(findViewer()).length) finish(new Error("Could not find the actual Telegram video in the media viewer."));
+        else finish(new Error("Telegram video source did not become available."));
+      }, timeoutMs);
       if (signal?.aborted) return cancel();
       check();
     });
   }
 
   async function resolveVideoSource(media, signal) {
+    if (media.lazyVideo) {
+      const activationTarget = media.activationTarget;
+      if (!(activationTarget instanceof HTMLImageElement) || !activationTarget.isConnected || !media.mediaContainer?.contains(activationTarget)) {
+        throw new Error("Could not find Telegram's video thumbnail activation target.");
+      }
+      console.info("[TG CONTENT] Opening Telegram media viewer from thumbnail");
+      // Telegram's lazy video placeholder opens the viewer on this image click.
+      // Its Blob URL is strictly an activation target and is never read here.
+      activationTarget.click();
+      return { ...media, ...await waitForViewerVideo("video", MAX_VIEWER_WAIT_MS, signal), type: "video", lazyVideo: false };
+    }
+
     const directSource = sourceFromVideo(media.element, media.type);
     if (directSource) return { ...media, ...directSource };
 
@@ -115,6 +140,7 @@
 
   function attachButton(element, descriptor) {
     if (buttons.has(element) || element.hasAttribute("data-tg-downloader-attached")) return;
+    if (descriptor.lazyVideo) console.info("[TG CONTENT] Detected lazy Telegram video placeholder");
     const parent = element.parentElement;
     if (!parent) return;
     const button = document.createElement("button");
