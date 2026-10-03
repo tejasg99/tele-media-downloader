@@ -1,6 +1,6 @@
 # Telegram Media Downloader (v1)
 
-A local Chrome Manifest V3 extension for saving media that the currently signed-in Telegram Web page already exposes. It supports accessible stream URLs, page-owned Blob URLs, same-origin direct resources, common images, videos/animations, and common document formats. It does not bypass authentication or Telegram access, quota, subscription, or payment controls.
+A local Chrome Manifest V3 extension for saving media that the currently signed-in Telegram Web page already exposes. It supports accessible stream URLs, page-owned Blob URLs, same-origin direct resources, common images, videos/animations, and common document formats.
 
 ## Load in Chrome
 
@@ -20,8 +20,4 @@ The extension handles `video/mp4`, `video/webm`, JPEG, PNG, WebP, GIF, PDF, ZIP,
 
 For OPFS-backed downloads, data is written incrementally and the resulting file is passed to the browser as a download. OPFS availability/quota varies by Chrome profile; if OPFS cannot be opened the extension falls back to memory, which can use substantial memory for large media. Blob URLs are read through a page-world fetch and browser Blob, then sliced for transfer; very large Blob sources may still require substantial browser-managed memory. If a direct resource ignores Range and returns the whole file, the page bridge has to buffer that response before writing it.
 
-Logs use `[TG CONTENT]`, `[TG BRIDGE]`, and `[TG DL]` prefixes. Complete Telegram resource URLs are never logged.
-
-## Verification status
-
-The source and manifest can be checked locally, but live Telegram media verification requires a signed-in Telegram Web session. The extension has not been measured against real 10–500 MB samples in this workspace. Verify media types, larger downloads, cancel/retry behavior, and playback in your account before relying on it for large files.
+Logs use `[TG CONTENT]`, `[TG BRIDGE]`, and `[TG DL]` prefixes.

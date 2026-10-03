@@ -10,6 +10,7 @@
   const MESSAGE_SELECTORS = [
     ".message", ".message-bubble", ".bubble", "[data-message-id]", "[data-mid]", ".Message"
   ];
+  const GROUPED_ITEM_SELECTOR = ".album-item.grouped-item";
   const EXCLUDED_UI_SELECTOR = [
     ".chatlist", ".chat-list", ".left-column", ".sidebar", ".profile", ".avatar",
     ".story", ".stories", ".media-viewer-whole", "#MediaViewer", "[role='navigation']",
@@ -49,7 +50,8 @@
 
   function findMessageContainer(element, root) {
     if (!element || !root || !root.contains(element) || isExcluded(element, root)) return null;
-    const message = element.closest(MESSAGE_SELECTOR);
+    let message = element.closest(MESSAGE_SELECTOR);
+    if (message?.matches(GROUPED_ITEM_SELECTOR)) message = message.parentElement?.closest(MESSAGE_SELECTOR) || null;
     if (!message || !root.contains(message) || isExcluded(message, root)) return null;
     // The media must be a descendant of a message-like node, not merely nearby
     // in the chat layout (for example, a composer attachment or empty-state art).
@@ -109,7 +111,7 @@
 
   function isLazyVideoPlaceholder(element) {
     if (!(element instanceof HTMLImageElement) || !element.classList.contains("media-photo")) return false;
-    const container = element.closest(".attachment.media-container");
+    const container = element.closest(GROUPED_ITEM_SELECTOR) || element.closest(".attachment.media-container");
     if (!container) return false;
     const hasPlayControl = !!container.querySelector(".video-play");
     const hasDuration = !!container.querySelector(".video-time");
@@ -134,6 +136,7 @@
       type, sourceType, url: source?.url || "", mimeType,
       filename: filenameFromElement(element, mimeType),
       size: Number(element.getAttribute("data-size")) || null,
+      containerElement: extra.containerElement || (extra.grouped ? element.closest(GROUPED_ITEM_SELECTOR) : null),
       element, message, ...extra
     });
   }
@@ -143,15 +146,17 @@
     const message = findMessageContainer(element, root);
     if (!message) return null;
     const tag = element.tagName;
+    const groupedItem = element.closest(GROUPED_ITEM_SELECTOR);
+    const groupDescriptor = groupedItem ? { grouped: true, containerElement: groupedItem } : {};
     if (tag === "VIDEO") {
       const type = classifyVideo(element, message);
       for (const candidate of getVideoCandidates(element)) {
         const source = validSource(candidate.url, element, type, candidate.mimeType);
-        if (source) return makeDescriptor(element, message, type, source);
+        if (source) return makeDescriptor(element, message, type, source, groupDescriptor);
       }
       // A message video may be lazy-loaded. Keep its button target, but mark
       // the source pending so click handling must resolve it through the viewer.
-      return makeDescriptor(element, message, type);
+      return makeDescriptor(element, message, type, null, groupDescriptor);
     }
     if (tag === "IMG") {
       const lazyVideoContainer = isLazyVideoPlaceholder(element);
@@ -159,22 +164,23 @@
         return makeDescriptor(element, message, "video", null, {
           activationTarget: element,
           mediaContainer: lazyVideoContainer,
-          lazyVideo: true
+          lazyVideo: true,
+          ...groupDescriptor
         });
       }
       if (element.closest("video, picture source,[class*='video-thumbnail'],[class*='video-poster'],[class*='video-preview']")) return null;
-      const mediaItem = element.closest(".media-container,.media-item,[class*='media-item'],.attachment");
+      const mediaItem = groupedItem || element.closest(".media-container,.media-item,[class*='media-item'],.attachment");
       if (mediaItem?.querySelector("video")) return null;
       const value = element.currentSrc || element.src || "";
       const source = validSource(value, element, "image", element.getAttribute("type") || mimeFromUrl(value) || "image/jpeg");
-      return source ? makeDescriptor(element, message, "image", source) : null;
+      return source ? makeDescriptor(element, message, "image", source, groupDescriptor) : null;
     }
     if (tag === "A") {
       const explicitDownload = element.hasAttribute("download");
       const mimeType = element.getAttribute("type") || mimeFromUrl(element.href) || (explicitDownload ? "application/octet-stream" : "");
       if (!mimeType || (!SUPPORTED.has(mimeType.toLowerCase()) && !(explicitDownload && mimeType.toLowerCase() === "application/octet-stream"))) return null;
       const source = validSource(element.href, element, "document", mimeType);
-      return source ? makeDescriptor(element, message, "document", source) : null;
+      return source ? makeDescriptor(element, message, "document", source, groupDescriptor) : null;
     }
     return null;
   }
@@ -184,12 +190,38 @@
     const messages = [];
     if (root.matches?.(MESSAGE_SELECTOR)) messages.push(root);
     root.querySelectorAll?.(MESSAGE_SELECTOR).forEach((message) => messages.push(message));
-    return [...new Set(messages)];
+    return [...new Set(messages.filter((message) => !message.matches(GROUPED_ITEM_SELECTOR)))];
+  }
+
+  function findGroupedMediaItems(root) {
+    if (!root) return [];
+    const items = [];
+    if (root.matches?.(GROUPED_ITEM_SELECTOR)) items.push(root);
+    root.querySelectorAll?.(GROUPED_ITEM_SELECTOR).forEach((item) => items.push(item));
+    return [...new Set(items)];
   }
 
   function scanMessage(message, root, callback) {
     if (!message || isExcluded(message, root)) return;
+    const groupedItems = findGroupedMediaItems(message);
+    const groupedSet = new Set(groupedItems);
+    for (const item of groupedItems) {
+      if (findMessageContainer(item, root) !== message) continue;
+      const candidates = [
+        ...item.querySelectorAll("video"),
+        ...item.querySelectorAll("img"),
+        ...item.querySelectorAll("a[href]")
+      ];
+      for (const element of candidates) {
+        const descriptor = detect(element, root);
+        if (descriptor) {
+          callback(element, descriptor);
+          break;
+        }
+      }
+    }
     message.querySelectorAll("video,img,a[href]").forEach((element) => {
+      if (element.closest(GROUPED_ITEM_SELECTOR) && groupedSet.has(element.closest(GROUPED_ITEM_SELECTOR))) return;
       const descriptor = detect(element, root);
       if (descriptor) callback(element, descriptor);
     });
@@ -215,6 +247,7 @@
     findActiveConversationRoot,
     findMessageContainers: messageContainersWithin,
     findMessageContainer,
+    findGroupedMediaItems,
     getVideoCandidates,
     isLazyVideoPlaceholder,
     validSource,

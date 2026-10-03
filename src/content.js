@@ -1,8 +1,7 @@
 (function () {
   "use strict";
 
-  const VIEWER_SELECTORS = [".media-viewer-whole", "#MediaViewer"];
-  const VIEWER_ACTIVE_SLIDE_SELECTORS = [".media-viewer-slide.active", ".MediaViewerSlide--active", "[class*='slide'][class*='active']"];
+  const VIEWER_SELECTOR = ".media-viewer-whole";
   const MAX_VIEWER_WAIT_MS = 9000;
   const buttons = new WeakMap();
   const trackedMedia = new Set();
@@ -17,24 +16,25 @@
   }
 
   function isVisible(element) {
-    return !!element && element.isConnected && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden";
+    if (!element || !element.isConnected || element.getClientRects().length === 0 || element.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
   }
 
   function findViewer() {
-    for (const selector of VIEWER_SELECTORS) {
-      const viewer = [...document.querySelectorAll(selector)].find(isVisible);
-      if (viewer) return viewer;
-    }
-    return null;
+    return [...document.querySelectorAll(VIEWER_SELECTOR)].find(isVisible) || null;
   }
 
   function viewerVideos(viewer) {
-    for (const selector of VIEWER_ACTIVE_SLIDE_SELECTORS) {
-      const slide = [...viewer.querySelectorAll(selector)].find(isVisible);
-      if (slide) {
-        const videos = [...slide.querySelectorAll("video")];
-        if (videos.length) return videos;
-      }
+    const aspecter = viewer.querySelector(".media-viewer-aspecter");
+    if (aspecter) {
+      const videos = [...aspecter.querySelectorAll("video")];
+      if (videos.length) return videos;
+    }
+    const movers = viewer.querySelector(".media-viewer-movers");
+    if (movers) {
+      const videos = [...movers.querySelectorAll("video")];
+      if (videos.length) return videos;
     }
     return [...viewer.querySelectorAll("video")];
   }
@@ -49,7 +49,7 @@
     return null;
   }
 
-  function waitForViewerVideo(mediaType, timeoutMs, signal) {
+  function waitForViewerVideo(mediaType, timeoutMs, signal, viewerBefore = null) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let loggedViewer = false;
@@ -72,6 +72,7 @@
           if (!loggedViewer) {
             loggedViewer = true;
             console.info("[TG CONTENT] Media viewer detected");
+            if (!viewerBefore) console.info("[TG CONTENT] Viewer opened by downloader");
           }
           const videos = viewerVideos(viewer);
           if (videos.length && !loggedVideo) {
@@ -82,7 +83,7 @@
             const source = sourceFromVideo(video, mediaType);
             if (source) {
               console.info(`[TG CONTENT] Viewer video source resolved; sourceType: ${source.sourceType}; mediaType: ${mediaType}; mimeType: ${source.mimeType}`);
-              finish(null, source);
+              finish(null, { source, viewer, viewerOpenedByDownloader: !viewerBefore });
               return;
             }
           }
@@ -109,24 +110,86 @@
       if (!(activationTarget instanceof HTMLImageElement) || !activationTarget.isConnected || !media.mediaContainer?.contains(activationTarget)) {
         throw new Error("Could not find Telegram's video thumbnail activation target.");
       }
+      const viewerBefore = findViewer();
       console.info("[TG CONTENT] Opening Telegram media viewer from thumbnail");
+      if (media.grouped) console.info("[TG CONTENT] Activating grouped video thumbnail");
       // Telegram's lazy video placeholder opens the viewer on this image click.
       // Its Blob URL is strictly an activation target and is never read here.
       activationTarget.click();
-      return { ...media, ...await waitForViewerVideo("video", MAX_VIEWER_WAIT_MS, signal), type: "video", lazyVideo: false };
+      const resolved = await waitForViewerVideo("video", MAX_VIEWER_WAIT_MS, signal, viewerBefore);
+      return {
+        media: { ...media, ...resolved.source, type: "video", lazyVideo: false },
+        viewer: resolved.viewer,
+        viewerOpenedByDownloader: resolved.viewerOpenedByDownloader
+      };
     }
 
     const directSource = sourceFromVideo(media.element, media.type);
-    if (directSource) return { ...media, ...directSource };
+    if (directSource) return { media: { ...media, ...directSource }, viewer: null, viewerOpenedByDownloader: false };
 
     const video = media.element;
-    const clickable = video.closest(".media-container,[class*='video-container'],[class*='media-inner'],[class*='message-media']") ||
+    const clickable = (media.grouped && media.containerElement) ||
+      video.closest(".media-container,[class*='video-container'],[class*='media-inner'],[class*='message-media']") ||
       video.parentElement || video;
     if (!media.message.contains(clickable)) throw new Error("Could not identify the video control in its Telegram message");
+    const viewerBefore = findViewer();
     console.info(`[TG CONTENT] Video source unavailable; opening message media viewer; mediaType: ${media.type}`);
     clickable.click();
-    const source = await waitForViewerVideo(media.type, MAX_VIEWER_WAIT_MS, signal);
-    return { ...media, ...source };
+    const resolved = await waitForViewerVideo(media.type, MAX_VIEWER_WAIT_MS, signal, viewerBefore);
+    return {
+      media: { ...media, ...resolved.source },
+      viewer: resolved.viewer,
+      viewerOpenedByDownloader: resolved.viewerOpenedByDownloader
+    };
+  }
+
+  function findViewerCloseControl(viewer) {
+    const selectors = [
+      "button[aria-label*='close' i]", "button[title*='close' i]", "[role='button'][aria-label*='close' i]",
+      "[data-action='close']", ".media-viewer-close", ".media-viewer-close-button", "[class*='media-viewer'][class*='close']"
+    ];
+    for (const selector of selectors) {
+      const control = [...viewer.querySelectorAll(selector)].find(isVisible);
+      if (control) return control;
+    }
+    return null;
+  }
+
+  function waitForViewerClosed(viewer, timeoutMs = 2000) {
+    return new Promise((resolve) => {
+      if (!isVisible(viewer)) return resolve(true);
+      let settled = false;
+      const finish = (closed) => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        clearTimeout(timeout);
+        resolve(closed);
+      };
+      const observer = new MutationObserver(() => {
+        if (!isVisible(viewer)) finish(true);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "aria-hidden"] });
+      const timeout = setTimeout(() => finish(!isVisible(viewer)), timeoutMs);
+    });
+  }
+
+  async function closeDownloaderOwnedViewer(viewer) {
+    if (!viewer || !isVisible(viewer)) return;
+    console.info("[TG CONTENT] Closing downloader-owned viewer");
+    const closeControl = findViewerCloseControl(viewer);
+    if (closeControl) {
+      closeControl.click();
+    } else {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    }
+    let closed = await waitForViewerClosed(viewer, 2000);
+    if (!closed && closeControl) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      closed = await waitForViewerClosed(viewer, 2000);
+    }
+    if (closed) console.info("[TG CONTENT] Viewer closed");
+    else console.warn("[TG CONTENT] Downloader-owned viewer did not close before timeout");
   }
 
   function detachButton(element) {
@@ -140,8 +203,12 @@
 
   function attachButton(element, descriptor) {
     if (buttons.has(element) || element.hasAttribute("data-tg-downloader-attached")) return;
-    if (descriptor.lazyVideo) console.info("[TG CONTENT] Detected lazy Telegram video placeholder");
-    const parent = element.parentElement;
+    if (descriptor.grouped) {
+      console.info("[TG CONTENT] Grouped media detected");
+      console.info("[TG CONTENT] Grouped media descriptor created");
+    }
+    if (descriptor.lazyVideo) console.info(descriptor.grouped ? "[TG CONTENT] Lazy grouped video detected" : "[TG CONTENT] Detected lazy Telegram video placeholder");
+    const parent = descriptor.grouped ? descriptor.containerElement : element.parentElement;
     if (!parent) return;
     const button = document.createElement("button");
     button.type = "button";
@@ -179,9 +246,12 @@
       state.resolutionController = new AbortController();
       button.disabled = false;
       button.textContent = "Resolving...";
+      let downloaderOwnedViewer = null;
       try {
         if (media.type === "video" || media.type === "animation") {
-          media = await resolveVideoSource(media, state.resolutionController.signal);
+          const resolution = await resolveVideoSource(media, state.resolutionController.signal);
+          media = resolution.media;
+          if (resolution.viewerOpenedByDownloader) downloaderOwnedViewer = resolution.viewer;
         }
         if (!media.url || !["stream", "blob", "direct"].includes(media.sourceType)) {
           throw new Error("No downloadable media source was found; no thumbnail was downloaded");
@@ -192,6 +262,8 @@
           button.textContent = percent === null ? "Downloading..." : `Downloading ${percent}%`;
         });
         button.textContent = "Completed";
+        console.info("[TG CONTENT] Download completed");
+        if (downloaderOwnedViewer) await closeDownloaderOwnedViewer(downloaderOwnedViewer);
       } catch (error) {
         button.textContent = error.message === "Cancelled" ? "Cancelled" : "Failed";
         console.error("[TG CONTENT] Download failed:", error.message);
