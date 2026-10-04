@@ -159,6 +159,11 @@
       return makeDescriptor(element, message, type, null, groupDescriptor);
     }
     if (tag === "IMG") {
+      // Telegram also renders message-text emoji as IMG assets in some builds.
+      // Exclude only images explicitly marked as emoji or contained by a
+      // Telegram emoji/text-run wrapper; never infer emoji from dimensions.
+      if (element.matches("[data-emoji],.emoji,.emoji-image,.custom-emoji,.emoji-sprite,[class*='emoji'] img") ||
+          element.closest(".emoji,.emoji-image,.custom-emoji,.emoji-sprite,[data-emoji],.message-text,.text-content,.translatable-message,.message-caption,[class*='message-text'],[class*='caption']")) return null;
       const lazyVideoContainer = isLazyVideoPlaceholder(element);
       if (lazyVideoContainer) {
         return makeDescriptor(element, message, "video", null, {

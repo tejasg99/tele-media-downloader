@@ -49,7 +49,7 @@
         lastError = error;
         if (signal.aborted || !isTransient(error) || attempt === 2) throw error;
         const delay = 400 * (2 ** attempt);
-        console.warn(`[TG DL] ${label} failed; retry ${attempt + 1}/2`);
+        global.TelegramMediaLogger?.warn(`${label} failed; retry ${attempt + 1}/2`);
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, delay);
           signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("Cancelled")); }, { once: true });
@@ -112,7 +112,7 @@
           try { await root.removeEntry(tempName); } catch (_) { /* already removed */ } }
       };
     } catch (error) {
-      console.info("[TG DL] OPFS unavailable; using memory chunks");
+      global.TelegramMediaLogger?.warn("OPFS unavailable; using memory chunks");
       const chunks = [];
       return { write: async (chunk) => { chunks.push(chunk); },
         finish: async (mimeType) => new Blob(chunks, { type: mimeType }), cleanup: async () => { chunks.length = 0; } };
@@ -222,15 +222,17 @@
     } catch (error) { await sink.cleanup(); throw error; }
   }
 
-  async function downloadMedia(media, onProgress) {
+  async function downloadMedia(media, onProgress, externalSignal = null) {
     if (!media || !["stream", "blob", "direct"].includes(media.sourceType)) throw new Error("Unsupported media source");
     const downloadId = crypto.randomUUID();
     const controller = new AbortController();
+    const abort = () => { controller.abort(); window.postMessage({ source: SOURCE, type: "CANCEL", downloadId }, "*"); };
+    if (externalSignal?.aborted) throw new Error("Cancelled");
+    externalSignal?.addEventListener("abort", abort, { once: true });
     downloads.set(downloadId, controller);
     onProgress?.(null, 0, media.size, downloadId);
     const report = (done, total) => {
       const percent = total ? Math.min(100, Math.floor(done / total * 100)) : null;
-      console.info(`[TG DL] Progress: ${percent === null ? "Downloading..." : `${percent}%`}`);
       onProgress?.(percent, done, total);
     };
     try {
@@ -239,6 +241,7 @@
       if (controller.signal.aborted) throw new Error("Cancelled");
       return { downloadId, size };
     } finally {
+      externalSignal?.removeEventListener("abort", abort);
       downloads.delete(downloadId);
       window.postMessage({ source: SOURCE, type: "RELEASE", downloadId }, "*");
     }
