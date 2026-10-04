@@ -119,5 +119,4 @@
       finally { active.delete(message.downloadId); }
     }
   });
-  console.info("[TG BRIDGE] Ready");
 })();

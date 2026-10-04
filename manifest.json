@@ -1,12 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Telegram Media Downloader",
-  "version": "0.1.0",
+  "version": "2.1.0",
   "description": "Personal Telegram Web media downloader.",
+  "permissions": ["sidePanel"],
+  "background": { "service_worker": "src/background/service-worker.js" },
+  "action": { "default_title": "Telegram Media Downloader" },
+  "side_panel": { "default_path": "src/sidepanel/sidepanel.html" },
   "content_scripts": [
     {
       "matches": ["https://web.telegram.org/*"],
-      "js": ["src/media-detector.js", "src/downloader.js", "src/content.js"],
+      "js": ["src/utils/logger.js", "src/media-detector.js", "src/downloader.js", "src/content.js"],
       "run_at": "document_idle"
     }
   ],
