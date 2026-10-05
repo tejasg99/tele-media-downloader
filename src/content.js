@@ -12,6 +12,7 @@
   const albumButtons = new WeakMap();
   const groupIds = new WeakMap();
   const albumButtonById = new Map();
+  const SVG_NS = "http://www.w3.org/2000/svg";
   const contentInstanceId=crypto.randomUUID();
   let viewerLockTail = Promise.resolve();
   let activeRoot = null;
@@ -43,21 +44,36 @@
     const requiresViewer=videoLike&&(!!media.lazyVideo||!sourceFromVideo(media.element,media.type));
     return { type:media.type, filename:media.filename, mimeType:media.mimeType, sourceType:media.sourceType, url:media.url, size:media.size, requiresViewer, groupId, itemId, mediaId:media.element?.getAttribute("data-media-id") || media.containerElement?.getAttribute("data-media-id") || null, messageId:media.message?.getAttribute("data-message-id") || media.message?.getAttribute("data-mid") || null };
   }
-  function setButtonState(key, status, progress = null) {
+  function ensureButtonVisual(button) {
+    let icon=button.querySelector(".tg-downloader-icon"), ring=button.querySelector(".tg-downloader-ring");
+    if(!icon){icon=document.createElementNS(SVG_NS,"svg");icon.classList.add("tg-downloader-icon");icon.setAttribute("viewBox","0 0 24 24");icon.setAttribute("aria-hidden","true");button.appendChild(icon);}
+    if(!ring){ring=document.createElementNS(SVG_NS,"svg");ring.classList.add("tg-downloader-ring");ring.setAttribute("viewBox","0 0 24 24");ring.setAttribute("aria-hidden","true");const track=document.createElementNS(SVG_NS,"circle");track.setAttribute("cx","12");track.setAttribute("cy","12");track.setAttribute("r","10");track.setAttribute("class","tg-downloader-ring-track");ring.appendChild(track);const progress=document.createElementNS(SVG_NS,"circle");progress.setAttribute("cx","12");progress.setAttribute("cy","12");progress.setAttribute("r","10");progress.setAttribute("class","tg-downloader-ring-progress");progress.setAttribute("stroke-dasharray","62.83");progress.setAttribute("stroke-dashoffset","62.83");ring.appendChild(progress);button.appendChild(ring);}
+    return {icon,ring,progress:ring.querySelector(".tg-downloader-ring-progress")};
+  }
+  function setButtonVisual(button,status,job=null,{album=false}={}) {
+    const visual=ensureButtonVisual(button),active=status==="queued"||status==="downloading";
+    const icon=status==="downloading"&&!album?"cancel":status==="failed"||status==="cancelled"?"retry":active?"loading":"download";
+    const paths={download:["M12 3v12m0 0 5-5m-5 5-5-5","M5 20h14"],cancel:["M6 6l12 12M18 6 6 18"],retry:["M20 7v5h-5","M20 12a8 8 0 1 0 2 5"]};
+    visual.icon.replaceChildren();
+    for(const d of paths[icon]||[]){const path=document.createElementNS(SVG_NS,"path");path.setAttribute("d",d);visual.icon.appendChild(path);}
+    visual.icon.style.display=icon==="loading"?"none":"block";
+    button.classList.toggle("tg-downloader-busy",active);button.classList.toggle("tg-downloader-indeterminate",active&&(job?.progress==null||!job?.totalBytes));
+    if(active&&job?.totalBytes>0&&Number.isFinite(job.bytesDownloaded)){const fraction=Math.max(0,Math.min(1,job.bytesDownloaded/job.totalBytes));visual.progress.setAttribute("stroke-dashoffset",String((62.83*(1-fraction)).toFixed(2)));}else visual.progress.setAttribute("stroke-dashoffset","62.83");
+  }
+  function setButtonState(key, status, job = null) {
     const entry = buttonByKey.get(key); if (!entry?.button.isConnected) return;
-    const symbols = { queued:"◌", downloading:"◌", completed:"✓", failed:"!", cancelled:"↓" };
-    entry.button.textContent = symbols[status] || "↓"; entry.button.dataset.status=status; entry.state.active=status==="downloading"; entry.button.disabled=false;
-    entry.button.title = status === "failed" ? "Download failed; activate to retry" : status === "downloading" ? "Cancel download" : status === "completed" ? "Download again" : status === "queued" ? "Queued" : "Download";
+    entry.button.dataset.status=status; entry.state.active=status==="downloading"; entry.button.disabled=false;setButtonVisual(entry.button,status,job);
+    entry.button.title = status === "failed" || status === "cancelled" ? "Retry download" : status === "downloading" ? "Cancel download" : status === "completed" ? "Download again" : status === "queued" ? "Download queued" : "Download";
     entry.button.setAttribute("aria-label", entry.button.title);
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === M.EXECUTE) { sendResponse({ accepted:true }); void executeJob(message); return false; }
     if (message?.type === M.CANCEL) { const entry=runningJobs.get(message.id); entry?.controller.abort(); if(entry?.downloadId)window.TelegramMediaDownloader.cancelDownload(entry.downloadId); }
     if (message?.type === M.UPDATED) {
-      const jobs=message.state?.jobs||[]; for(const job of jobs) if(job.mediaKey) { const entry=buttonByKey.get(job.mediaKey); if(entry){entry.state.jobId=job.id;entry.button.dataset.jobId=job.id;if(entry.state.cancelRequested){entry.state.cancelRequested=false;send(M.CANCEL,{id:job.id});}} setButtonState(job.mediaKey,job.status,job.progress); }
-      for(const key of new Set(jobs.map(job=>job.mediaKey).filter(Boolean))){const same=jobs.filter(job=>job.mediaKey===key);if(same.every(job=>["completed","cancelled"].includes(job.status)))runtimeMedia.delete(key);}
-      for(const [groupId,button] of albumButtonById){const grouped=jobs.filter(j=>j.groupId===groupId);if(!grouped.length)continue;const statuses=grouped.map(j=>j.status);button.textContent=statuses.some(s=>s==="queued"||s==="downloading")?"◌":statuses.every(s=>s==="completed")?"✓":statuses.some(s=>s==="failed")?"!":"↓";button.title=button.textContent==="✓"?"Album completed":button.textContent==="!"?"Some downloads failed":"Download album";}
-      for(const [key,entry] of buttonByKey){ const related=jobs.filter(j=>j.mediaKey===key); if(related.length>1 && related.some(j=>["queued","downloading"].includes(j.status))) setButtonState(key,"queued"); }
+      const jobs=message.state?.jobs||[]; for(const job of jobs) if(job.mediaKey) { const entry=buttonByKey.get(job.mediaKey); if(entry){entry.state.jobId=job.id;entry.button.dataset.jobId=job.id;if(entry.state.cancelRequested){entry.state.cancelRequested=false;send(M.CANCEL,{id:job.id});}} setButtonState(job.mediaKey,job.status,job); }
+      for(const key of new Set(jobs.map(job=>job.mediaKey).filter(Boolean))){const same=jobs.filter(job=>job.mediaKey===key);if(same.every(job=>job.status==="completed"))runtimeMedia.delete(key);}
+      for(const [groupId,button] of albumButtonById){const grouped=jobs.filter(j=>j.groupId===groupId);if(!grouped.length)continue;const active=grouped.some(j=>j.status==="queued"||j.status==="downloading");setButtonVisual(button,active?"downloading":"idle",grouped.find(j=>j.status==="downloading")||grouped.find(j=>j.status==="queued"),{album:true});button.title=grouped.some(j=>j.status==="failed"||j.status==="cancelled")?"Some items need retry":"Download album";button.setAttribute("aria-label",button.title);}
+      for(const [key,entry] of buttonByKey){ const related=jobs.filter(j=>j.mediaKey===key),active=related.find(j=>j.status==="downloading")||related.find(j=>j.status==="queued"); if(active)setButtonState(key,active.status,active); }
     }
   });
 
@@ -300,12 +316,13 @@
     if (!parent) return;
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "↓";
+    ensureButtonVisual(button);
     button.title = "Download";
     button.setAttribute("aria-label", "Download");
     button.setAttribute("data-tg-downloader-button", "true");
     button.className="tg-media-download-button";
-    button.style.cssText = "position:absolute;z-index:2147483647;top:8px;right:8px;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#2481cc;color:#fff;font:18px sans-serif;cursor:pointer;box-shadow:0 1px 4px #0005";
+    setButtonVisual(button,"idle");
+    button.style.cssText = "position:absolute;z-index:2147483647;top:8px;right:8px;width:32px;height:32px;padding:0;border:0;border-radius:50%;background:#2481cc;color:#fff;cursor:pointer;box-shadow:0 1px 4px #0005";
     if (getComputedStyle(parent).position === "static") parent.style.position = "relative";
     parent.appendChild(button);
     element.setAttribute("data-tg-downloader-attached", "true");
@@ -320,10 +337,10 @@
       event.stopPropagation();
       const jobId=button.dataset.jobId;
       if (state.active || button.dataset.status === "queued" || button.dataset.status === "downloading") { if(jobId)send(M.CANCEL,{id:jobId});else state.cancelRequested=true; return; }
-      if(button.dataset.status==="failed") { if(jobId)send(M.RETRY,{id:jobId}); return; }
+      if(button.dataset.status==="failed"||button.dataset.status==="cancelled") { if(jobId)send(M.RETRY,{id:jobId}); return; }
       let media = window.TelegramMediaDetector.detect(element);
       if (!media) {
-        button.textContent = "!";
+        button.title="Media is no longer available";
         button.disabled = true;
         setTimeout(() => detachButton(element), 1800);
         return;
@@ -336,8 +353,8 @@
 
   function attachAlbumButton(message) {
     if(!message || albumButtons.has(message)) return;
-    const button=document.createElement("button"); button.type="button"; button.textContent="↓"; button.title="Download album"; button.setAttribute("aria-label","Download album"); button.setAttribute("data-tg-downloader-button","true"); button.className="tg-media-download-button";
-    button.style.cssText="display:block;margin:5px auto 0;width:32px;height:32px;border:0;border-radius:50%;background:#2481cc;color:white;font:18px sans-serif;cursor:pointer";
+    const button=document.createElement("button"); button.type="button"; ensureButtonVisual(button); button.title="Download album"; button.setAttribute("aria-label","Download album"); button.setAttribute("data-tg-downloader-button","true"); button.className="tg-media-download-button";setButtonVisual(button,"idle",null,{album:true});
+    button.style.cssText="display:flex;margin:5px auto 0;width:32px;height:32px;border:0;border-radius:50%;background:#2481cc;color:#fff;cursor:pointer;box-shadow:0 1px 4px #0005;z-index:2147483647";
     if(!message.querySelector(GROUP_SELECTOR))return;
     message.appendChild(button); albumButtons.set(message,button);const groupId=getGroupId(message);albumButtonById.set(groupId,button);
     button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();const items=[],seen=new Set(),names=new Map();
@@ -351,7 +368,7 @@
         items.push({key,media});
         window.TelegramMediaLogger?.debug("Album item collected",{mediaKey:key,mediaId:media.mediaId,groupId:media.groupId,itemId:media.itemId,type:media.type,sourceType:media.sourceType});
       }
-      if(!items.length)return;window.TelegramMediaLogger?.debug("Album batch submitted",{groupId:items[0].media.groupId,itemCount:items.length});send(M.ADD_MANY,{items},()=>{button.textContent="◌";});
+      if(!items.length)return;window.TelegramMediaLogger?.debug("Album batch submitted",{groupId:items[0].media.groupId,itemCount:items.length});send(M.ADD_MANY,{items});setButtonVisual(button,"queued",null,{album:true});
     });
   }
 
@@ -413,7 +430,7 @@
   }
 
   injectBridge();
-  const style=document.createElement("style");style.textContent=".tg-media-download-button:hover{filter:brightness(1.12)}.tg-media-download-button:focus-visible{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #2481cc}.tg-media-download-button[data-status='downloading']{animation:tg-media-spin 1.2s linear infinite}@keyframes tg-media-spin{to{transform:rotate(360deg)}}";(document.head||document.documentElement).appendChild(style);
+  const style=document.createElement("style");style.textContent=".tg-media-download-button{display:inline-flex;align-items:center;justify-content:center;position:relative;cursor:pointer;transition:filter .15s ease}.tg-media-download-button:hover{filter:brightness(1.12)}.tg-media-download-button:focus-visible{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #2481cc}.tg-downloader-icon{width:17px;height:17px;position:relative;z-index:1;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.tg-downloader-ring{display:none;position:absolute;inset:1px;width:calc(100% - 2px);height:calc(100% - 2px);transform:rotate(-90deg);overflow:visible}.tg-downloader-busy .tg-downloader-ring{display:block}.tg-downloader-ring-track,.tg-downloader-ring-progress{fill:none;stroke-width:2}.tg-downloader-ring-track{stroke:#fff;opacity:.35}.tg-downloader-ring-progress{stroke:#fff;stroke-linecap:round;transition:stroke-dashoffset .12s linear}.tg-downloader-indeterminate .tg-downloader-ring-progress{stroke-dasharray:22 41;stroke-dashoffset:0;animation:tg-downloader-ring-spin 1s linear infinite}@keyframes tg-downloader-ring-spin{to{transform:rotate(360deg);transform-origin:12px 12px}}@media(prefers-reduced-motion:reduce){.tg-media-download-button{transition:none}.tg-downloader-indeterminate .tg-downloader-ring-progress{animation:none;stroke-dasharray:16 47;stroke-dashoffset:0}}";(document.head||document.documentElement).appendChild(style);
   scan(document);
   document.addEventListener("loadedmetadata", (event) => {
     if (event.target instanceof HTMLVideoElement) scan(event.target);
