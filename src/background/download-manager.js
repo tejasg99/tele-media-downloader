@@ -39,12 +39,12 @@ class DownloadManager {
     }
   }
   update(id, patch) { const job = this.jobs.get(id); if (!job) return; Object.assign(job, patch); this.emit(); }
-  finish(id, status, error = null) { const job = this.jobs.get(id); if (!job) return; job.status = status; job.cancelRequested=false; job.error = error ? "Download failed" : null; job.progress = status === "completed" ? 100 : job.progress; if (status === "completed" || status === "cancelled") job.media = null; this.active.delete(id); if(job.viewerLockHeld){this.viewerActiveTabs.delete(job.tabId);job.viewerLockHeld=false;} this.emit(); this.pump(); }
+  finish(id, status, error = null) { const job = this.jobs.get(id); if (!job) return; job.status = status; job.cancelRequested=false; job.error = error ? "Download failed" : null; job.progress = status === "completed" ? 100 : job.progress; if (status === "completed") job.media = null; this.active.delete(id); if(job.viewerLockHeld){this.viewerActiveTabs.delete(job.tabId);job.viewerLockHeld=false;} this.emit(); this.pump(); }
   cancel(id) {
     const job = this.jobs.get(id); if (!job || ["completed", "failed", "cancelled"].includes(job.status)) return;
-    if (job.status === "queued") { this.queue = this.queue.filter(value => value !== id); job.status = "cancelled"; job.media = null; this.emit(); return; }
+    if (job.status === "queued") { this.queue = this.queue.filter(value => value !== id); job.status = "cancelled"; job.cancelRequested=false; this.emit(); return; }
     job.cancelRequested=true;chrome.tabs.sendMessage(job.tabId, { type: DownloadMessages.CANCEL, id });
   }
-  retry(id) { const job = this.jobs.get(id); if (!job || job.status !== "failed" || !job.media) return; job.status="queued"; job.cancelRequested=false; job.error=null; job.progress=null; job.bytesDownloaded=0; job.totalBytes=job.totalBytes||null; job.attempts=0; this.queue.push(id); this.emit(); this.pump(); }
+  retry(id) { const job = this.jobs.get(id); if (!job || !["failed", "cancelled"].includes(job.status) || !job.media) return; if ([...this.jobs.values()].some(other => other.id !== id && other.identity === job.identity && ["queued", "downloading"].includes(other.status))) return; job.status="queued"; job.cancelRequested=false; job.error=null; job.progress=null; job.bytesDownloaded=0; job.speed=null; job.totalBytes=job.totalBytes||job.media.size||null; job.attempts=0; this.queue.push(id); this.emit(); this.pump(); }
   clearCompleted() { for (const [id, job] of this.jobs) if (job.status === "completed") this.jobs.delete(id); this.emit(); }
 }
