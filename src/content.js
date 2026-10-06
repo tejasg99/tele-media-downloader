@@ -9,6 +9,8 @@
   const runtimeMedia = new Map();
   const runningJobs = new Map();
   const buttonByKey = new Map();
+  const latestJobByMediaKey = new Map();
+  const activeAlbumJobIds = new Map();
   const albumButtons = new WeakMap();
   const groupIds = new WeakMap();
   const albumButtonById = new Map();
@@ -16,6 +18,7 @@
   const contentInstanceId=crypto.randomUUID();
   let viewerLockTail = Promise.resolve();
   let activeRoot = null;
+  let receivedQueueUpdate = false;
   const M = { ADD:"DOWNLOAD_ADD", ADD_MANY:"DOWNLOAD_ADD_MANY", CANCEL:"DOWNLOAD_CANCEL", RETRY:"DOWNLOAD_RETRY", CLEAR:"DOWNLOAD_CLEAR_COMPLETED", GET:"QUEUE_GET_STATE", UPDATED:"QUEUE_STATE_UPDATED", EXECUTE:"DOWNLOAD_EXECUTE", PROGRESS:"DOWNLOAD_PROGRESS", COMPLETE:"DOWNLOAD_COMPLETE", FAIL:"DOWNLOAD_FAIL", CANCELLED:"DOWNLOAD_CANCELLED" };
 
   function getGroupId(message) {
@@ -33,7 +36,7 @@
     if(media.grouped&&media.message)return `album:${getGroupId(media.message)}:${groupedItemId(media)}`;
     const mediaId=media.element?.getAttribute("data-media-id");if(mediaId)return `media:${mediaId}`;
     const messageId=media.message?.getAttribute("data-message-id")||media.message?.getAttribute("data-mid");
-    if(messageId&&media.url)return `message:${messageId}:${shortHash(media.url)}`;
+    if(messageId&&media.message){const candidates=[...media.message.querySelectorAll("video,img,a[href]")],index=candidates.indexOf(media.element);if(index>=0)return `message:${messageId}:${media.element?.tagName?.toLowerCase()||"media"}:${index}`;if(media.url)return `message:${messageId}:${shortHash(media.url)}`;}
     let key=keysByElement.get(media.element); if(!key){key=crypto.randomUUID();keysByElement.set(media.element,key);} return key;
   }
   function send(type, fields = {}, callback) { chrome.runtime.sendMessage({ type, ...fields }, response => { void chrome.runtime.lastError; callback?.(response); }); }
@@ -45,36 +48,66 @@
     return { type:media.type, filename:media.filename, mimeType:media.mimeType, sourceType:media.sourceType, url:media.url, size:media.size, requiresViewer, groupId, itemId, mediaId:media.element?.getAttribute("data-media-id") || media.containerElement?.getAttribute("data-media-id") || null, messageId:media.message?.getAttribute("data-message-id") || media.message?.getAttribute("data-mid") || null };
   }
   function ensureButtonVisual(button) {
-    let icon=button.querySelector(".tg-downloader-icon"), ring=button.querySelector(".tg-downloader-ring");
+    let icon=button.querySelector(".tg-downloader-icon");
     if(!icon){icon=document.createElementNS(SVG_NS,"svg");icon.classList.add("tg-downloader-icon");icon.setAttribute("viewBox","0 0 24 24");icon.setAttribute("aria-hidden","true");button.appendChild(icon);}
-    if(!ring){ring=document.createElementNS(SVG_NS,"svg");ring.classList.add("tg-downloader-ring");ring.setAttribute("viewBox","0 0 24 24");ring.setAttribute("aria-hidden","true");const track=document.createElementNS(SVG_NS,"circle");track.setAttribute("cx","12");track.setAttribute("cy","12");track.setAttribute("r","10");track.setAttribute("class","tg-downloader-ring-track");ring.appendChild(track);const progress=document.createElementNS(SVG_NS,"circle");progress.setAttribute("cx","12");progress.setAttribute("cy","12");progress.setAttribute("r","10");progress.setAttribute("class","tg-downloader-ring-progress");progress.setAttribute("stroke-dasharray","62.83");progress.setAttribute("stroke-dashoffset","62.83");ring.appendChild(progress);button.appendChild(ring);}
-    return {icon,ring,progress:ring.querySelector(".tg-downloader-ring-progress")};
+    return {icon};
   }
-  function setButtonVisual(button,status,job=null,{album=false}={}) {
+  function setButtonVisual(button,status) {
     const visual=ensureButtonVisual(button),active=status==="queued"||status==="downloading";
-    const icon=status==="downloading"&&!album?"cancel":status==="failed"||status==="cancelled"?"retry":active?"loading":"download";
-    const paths={download:["M12 3v12m0 0 5-5m-5 5-5-5","M5 20h14"],cancel:["M6 6l12 12M18 6 6 18"],retry:["M20 7v5h-5","M20 12a8 8 0 1 0 2 5"]};
+    const icon=active?"cancel":"download";
+    const paths={download:["M12 3v12m0 0 5-5m-5 5-5-5","M5 20h14"],cancel:["M6 6l12 12M18 6 6 18"]};
     visual.icon.replaceChildren();
     for(const d of paths[icon]||[]){const path=document.createElementNS(SVG_NS,"path");path.setAttribute("d",d);visual.icon.appendChild(path);}
-    visual.icon.style.display=icon==="loading"?"none":"block";
-    button.classList.toggle("tg-downloader-busy",active);button.classList.toggle("tg-downloader-indeterminate",active&&(job?.progress==null||!job?.totalBytes));
-    if(active&&job?.totalBytes>0&&Number.isFinite(job.bytesDownloaded)){const fraction=Math.max(0,Math.min(1,job.bytesDownloaded/job.totalBytes));visual.progress.setAttribute("stroke-dashoffset",String((62.83*(1-fraction)).toFixed(2)));}else visual.progress.setAttribute("stroke-dashoffset","62.83");
+    visual.icon.style.display="block";
   }
   function setButtonState(key, status, job = null) {
     const entry = buttonByKey.get(key); if (!entry?.button.isConnected) return;
-    entry.button.dataset.status=status; entry.state.active=status==="downloading"; entry.button.disabled=false;setButtonVisual(entry.button,status,job);
-    entry.button.title = status === "failed" || status === "cancelled" ? "Retry download" : status === "downloading" ? "Cancel download" : status === "completed" ? "Download again" : status === "queued" ? "Download queued" : "Download";
+    const previousStatus=entry.button.dataset.status;
+    if(previousStatus!==status||entry.state.renderedJobId!==(job?.id||entry.state.jobId||null))window.TelegramMediaLogger?.debug(`[TG UI] mediaKey=${key} jobId=${job?.id||entry.state.jobId||"pending"} ${status}`);
+    entry.state.renderedJobId=job?.id||entry.state.jobId||null;
+    entry.button.dataset.status=status; entry.state.active=status==="downloading"; entry.button.disabled=false;setButtonVisual(entry.button,status);
+    if(status==="completed"){entry.state.jobId=null;delete entry.button.dataset.jobId;window.TelegramMediaLogger?.debug(`[TG UI] mediaKey=${key} jobId=${job?.id||"unknown"} render completed → redownload`);}
+    entry.button.title = status === "queued" || status === "downloading" ? "Cancel download" : status === "completed" ? "Download again" : "Download";
     entry.button.setAttribute("aria-label", entry.button.title);
+  }
+  function renderAlbumState(groupId,button,jobs) {
+    const active=jobs.filter(job=>job.status==="queued"||job.status==="downloading");activeAlbumJobIds.set(groupId,active.map(job=>job.id));
+    const status=active.some(job=>job.status==="downloading")?"downloading":active.length?"queued":"idle";
+    button.dataset.status=status;setButtonVisual(button,status);button.title=active.length?"Cancel album download":"Download album";button.setAttribute("aria-label",button.title);
+  }
+  function applyQueueState(state) {
+    const jobs=state?.jobs||[],latest=new Map();
+    for(const job of jobs){
+      if(!job.mediaKey)continue;
+      const previous=latest.get(job.mediaKey),jobActive=job.status==="queued"||job.status==="downloading",previousActive=previous&&(previous.status==="queued"||previous.status==="downloading");
+      if(!previous||(jobActive&&!previousActive)||jobActive===previousActive&&(job.createdAt||0)>=(previous.createdAt||0))latest.set(job.mediaKey,job);
+    }
+    for(const [key,job] of latest){
+      const previous=latestJobByMediaKey.get(key);
+      const currentActive=previous&&["queued","downloading"].includes(previous.status),incomingActive=["queued","downloading"].includes(job.status);
+      let selected=job;
+      if(previous?.id===job.id){
+        // A retry re-enters through queued. Other backwards transitions for the
+        // same job ID are stale snapshots (a completed job is redownloaded with a new ID).
+        if(previous.status==="completed"&&job.status!=="completed")selected=previous;
+        else if((previous.status==="failed"||previous.status==="cancelled")&&job.status==="downloading")selected=previous;
+        else if(previous.status==="downloading"&&job.status==="queued")selected=previous;
+      }else if(currentActive&&!incomingActive)selected=previous;
+      else if(currentActive===incomingActive&&(previous?.createdAt||0)>=(job.createdAt||0))selected=previous;
+      latestJobByMediaKey.set(key,selected);
+      const entry=buttonByKey.get(key);if(!entry)continue;
+      entry.state.jobId=selected.id;if(selected.status!=="completed")entry.button.dataset.jobId=selected.id;
+      if(entry.state.cancelRequested){entry.state.cancelRequested=false;send(M.CANCEL,{id:selected.id});}
+      setButtonState(key,selected.status,selected);
+    }
+    for(const key of new Set(jobs.map(job=>job.mediaKey).filter(Boolean))){const same=jobs.filter(job=>job.mediaKey===key);if(same.every(job=>job.status==="completed"))runtimeMedia.delete(key);}
+    for(const [groupId,button] of albumButtonById){const grouped=jobs.filter(j=>j.groupId===groupId);if(grouped.length)renderAlbumState(groupId,button,grouped);}
+    receivedQueueUpdate=true;
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === M.EXECUTE) { sendResponse({ accepted:true }); void executeJob(message); return false; }
     if (message?.type === M.CANCEL) { const entry=runningJobs.get(message.id); entry?.controller.abort(); if(entry?.downloadId)window.TelegramMediaDownloader.cancelDownload(entry.downloadId); }
-    if (message?.type === M.UPDATED) {
-      const jobs=message.state?.jobs||[]; for(const job of jobs) if(job.mediaKey) { const entry=buttonByKey.get(job.mediaKey); if(entry){entry.state.jobId=job.id;entry.button.dataset.jobId=job.id;if(entry.state.cancelRequested){entry.state.cancelRequested=false;send(M.CANCEL,{id:job.id});}} setButtonState(job.mediaKey,job.status,job); }
-      for(const key of new Set(jobs.map(job=>job.mediaKey).filter(Boolean))){const same=jobs.filter(job=>job.mediaKey===key);if(same.every(job=>job.status==="completed"))runtimeMedia.delete(key);}
-      for(const [groupId,button] of albumButtonById){const grouped=jobs.filter(j=>j.groupId===groupId);if(!grouped.length)continue;const active=grouped.some(j=>j.status==="queued"||j.status==="downloading");setButtonVisual(button,active?"downloading":"idle",grouped.find(j=>j.status==="downloading")||grouped.find(j=>j.status==="queued"),{album:true});button.title=grouped.some(j=>j.status==="failed"||j.status==="cancelled")?"Some items need retry":"Download album";button.setAttribute("aria-label",button.title);}
-      for(const [key,entry] of buttonByKey){ const related=jobs.filter(j=>j.mediaKey===key),active=related.find(j=>j.status==="downloading")||related.find(j=>j.status==="queued"); if(active)setButtonState(key,active.status,active); }
-    }
+    if (message?.type === M.UPDATED) applyQueueState(message.state);
   });
 
   function injectBridge() {
@@ -305,6 +338,7 @@
     const entry = buttons.get(element);
     if (!entry) return;
     entry.button.remove();
+    if(entry.key&&buttonByKey.get(entry.key)===entry)buttonByKey.delete(entry.key);
     element.removeAttribute("data-tg-downloader-attached");
     buttons.delete(element);
     trackedMedia.delete(element);
@@ -327,17 +361,17 @@
     parent.appendChild(button);
     element.setAttribute("data-tg-downloader-attached", "true");
     const state = { active: false, downloadId: null };
-    const entry = { button, state };
+    const entry = { button, state, key:null };
     buttons.set(element, entry);
     trackedMedia.add(element);
-    const key=mediaKey(descriptor); runtimeMedia.set(key,descriptor); buttonByKey.set(key,entry);
+    const key=mediaKey(descriptor);entry.key=key;runtimeMedia.set(key,descriptor);buttonByKey.set(key,entry);
+    const latest=latestJobByMediaKey.get(key);if(latest){state.jobId=latest.id;button.dataset.jobId=latest.id;setButtonState(key,latest.status,latest);}
 
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
       const jobId=button.dataset.jobId;
       if (state.active || button.dataset.status === "queued" || button.dataset.status === "downloading") { if(jobId)send(M.CANCEL,{id:jobId});else state.cancelRequested=true; return; }
-      if(button.dataset.status==="failed"||button.dataset.status==="cancelled") { if(jobId)send(M.RETRY,{id:jobId}); return; }
       let media = window.TelegramMediaDetector.detect(element);
       if (!media) {
         button.title="Media is no longer available";
@@ -353,11 +387,11 @@
 
   function attachAlbumButton(message) {
     if(!message || albumButtons.has(message)) return;
-    const button=document.createElement("button"); button.type="button"; ensureButtonVisual(button); button.title="Download album"; button.setAttribute("aria-label","Download album"); button.setAttribute("data-tg-downloader-button","true"); button.className="tg-media-download-button";setButtonVisual(button,"idle",null,{album:true});
+    const button=document.createElement("button"); button.type="button"; ensureButtonVisual(button); button.title="Download album"; button.setAttribute("aria-label","Download album"); button.setAttribute("data-tg-downloader-button","true"); button.className="tg-media-download-button";button.dataset.status="idle";setButtonVisual(button,"idle");
     button.style.cssText="display:flex;margin:5px auto 0;width:32px;height:32px;border:0;border-radius:50%;background:#2481cc;color:#fff;cursor:pointer;box-shadow:0 1px 4px #0005;z-index:2147483647";
     if(!message.querySelector(GROUP_SELECTOR))return;
-    message.appendChild(button); albumButtons.set(message,button);const groupId=getGroupId(message);albumButtonById.set(groupId,button);
-    button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();const items=[],seen=new Set(),names=new Map();
+    message.appendChild(button); albumButtons.set(message,button);const groupId=getGroupId(message);albumButtonById.set(groupId,button);renderAlbumState(groupId,button,[...latestJobByMediaKey.values()].filter(job=>job.groupId===groupId));
+    button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();const groupId=getGroupId(message),activeIds=activeAlbumJobIds.get(groupId)||[];if(activeIds.length){for(const id of activeIds)send(M.CANCEL,{id});return;}const items=[],seen=new Set(),names=new Map();
       for(const item of message.querySelectorAll(GROUP_SELECTOR)){
         const candidate=[...item.querySelectorAll("video,img,a[href]")].find(el=>buttons.has(el)&&el.closest(GROUP_SELECTOR)===item);
         if(!candidate||seen.has(candidate))continue;seen.add(candidate);
@@ -368,7 +402,7 @@
         items.push({key,media});
         window.TelegramMediaLogger?.debug("Album item collected",{mediaKey:key,mediaId:media.mediaId,groupId:media.groupId,itemId:media.itemId,type:media.type,sourceType:media.sourceType});
       }
-      if(!items.length)return;window.TelegramMediaLogger?.debug("Album batch submitted",{groupId:items[0].media.groupId,itemCount:items.length});send(M.ADD_MANY,{items});setButtonVisual(button,"queued",null,{album:true});
+      if(!items.length)return;window.TelegramMediaLogger?.debug("Album batch submitted",{groupId:items[0].media.groupId,itemCount:items.length});send(M.ADD_MANY,{items});button.dataset.status="queued";button.title="Cancel album download";button.setAttribute("aria-label",button.title);setButtonVisual(button,"queued");
     });
   }
 
@@ -430,8 +464,9 @@
   }
 
   injectBridge();
-  const style=document.createElement("style");style.textContent=".tg-media-download-button{display:inline-flex;align-items:center;justify-content:center;position:relative;cursor:pointer;transition:filter .15s ease}.tg-media-download-button:hover{filter:brightness(1.12)}.tg-media-download-button:focus-visible{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #2481cc}.tg-downloader-icon{width:17px;height:17px;position:relative;z-index:1;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.tg-downloader-ring{display:none;position:absolute;inset:1px;width:calc(100% - 2px);height:calc(100% - 2px);transform:rotate(-90deg);overflow:visible}.tg-downloader-busy .tg-downloader-ring{display:block}.tg-downloader-ring-track,.tg-downloader-ring-progress{fill:none;stroke-width:2}.tg-downloader-ring-track{stroke:#fff;opacity:.35}.tg-downloader-ring-progress{stroke:#fff;stroke-linecap:round;transition:stroke-dashoffset .12s linear}.tg-downloader-indeterminate .tg-downloader-ring-progress{stroke-dasharray:22 41;stroke-dashoffset:0;animation:tg-downloader-ring-spin 1s linear infinite}@keyframes tg-downloader-ring-spin{to{transform:rotate(360deg);transform-origin:12px 12px}}@media(prefers-reduced-motion:reduce){.tg-media-download-button{transition:none}.tg-downloader-indeterminate .tg-downloader-ring-progress{animation:none;stroke-dasharray:16 47;stroke-dashoffset:0}}";(document.head||document.documentElement).appendChild(style);
+  const style=document.createElement("style");style.textContent=".tg-media-download-button{display:inline-flex;align-items:center;justify-content:center;position:relative;cursor:pointer;transition:filter .15s ease}.tg-media-download-button:hover{filter:brightness(1.12)}.tg-media-download-button:focus-visible{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #2481cc}.tg-downloader-icon{width:17px;height:17px;position:relative;z-index:1;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}@media(prefers-reduced-motion:reduce){.tg-media-download-button{transition:none}}";(document.head||document.documentElement).appendChild(style);
   scan(document);
+  send(M.GET,{},state=>{if(!receivedQueueUpdate)applyQueueState(state);});
   document.addEventListener("loadedmetadata", (event) => {
     if (event.target instanceof HTMLVideoElement) scan(event.target);
   }, true);
