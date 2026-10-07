@@ -9,6 +9,7 @@
     "application/pdf", "application/zip", "text/plain", "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"]);
 
+  // Allows only resource URLs that the extension is designed to read.
   function parseAllowedUrl(value, allowBlob) {
     try {
       const url = new URL(value);
@@ -20,10 +21,12 @@
     } catch (_) { return null; }
   }
 
+  // Sends a correlated response back to the extension content script.
   function reply(type, requestId, payload = {}, transfer = []) {
     window.postMessage({ source: SOURCE, type, requestId, ...payload }, "*", transfer);
   }
 
+  // Handles validated bridge requests for Telegram page-owned resources.
   window.addEventListener("message", async (event) => {
     const message = event.data;
     if (event.source !== window || !message || message.source !== SOURCE) return;

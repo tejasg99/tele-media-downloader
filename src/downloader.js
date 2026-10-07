@@ -7,6 +7,7 @@
   const downloads = new Map();
   const RESPONSE_TYPES = new Set(["RANGE_RESPONSE", "RANGE_ERROR", "BLOB_RESPONSE", "BLOB_ERROR", "DIRECT_RESOURCE_RESPONSE", "DIRECT_RESOURCE_ERROR"]);
 
+  // Resolves or rejects pending page-bridge requests from their responses.
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (event.source !== window || !message || message.source !== SOURCE || !RESPONSE_TYPES.has(message.type)) return;
@@ -18,6 +19,7 @@
     else entry.resolve(message);
   });
 
+  // Sends a cancellable request to the page-world resource bridge.
   function bridgeRequest(type, fields, signal) {
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(new Error("Cancelled"));
@@ -35,11 +37,13 @@
     });
   }
 
+  // Identifies network or server failures that may succeed on another attempt.
   function isTransient(error) {
     if (/HTTP (429|5\d\d)/i.test(error.message)) return true;
     return !/Cancelled|Invalid|Unsupported|Content-Range|incomplete|expected 206|HTTP 4\d\d/i.test(error.message);
   }
 
+  // Retries transient transfer operations with bounded backoff and cancellation.
   async function withRetry(operation, signal, label) {
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -59,6 +63,7 @@
     throw lastError;
   }
 
+  // Validates a Content-Range header against the requested byte interval.
   function parseContentRange(value, expectedStart, expectedEnd) {
     const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value || "");
     if (!match || Number(match[1]) !== expectedStart || Number(match[2]) !== expectedEnd) throw new Error("Missing or invalid Content-Range");
@@ -67,6 +72,7 @@
     return total;
   }
 
+  // Sanitizes download filenames and supplies a suitable extension if needed.
   function safeFilename(value, mimeType) {
     const fallbackExt = ({ "video/mp4": "mp4", "video/webm": "webm", "image/jpeg": "jpg", "image/png": "png",
       "image/webp": "webp", "image/gif": "gif", "application/pdf": "pdf", "application/zip": "zip", "text/plain": "txt",
@@ -79,6 +85,7 @@
     return name;
   }
 
+  // Rejects a resource response whose MIME type conflicts with its media type.
   function assertMediaMime(media, value) {
     const mimeType = String(value || "").split(";")[0].trim().toLowerCase();
     if (!mimeType) return;
@@ -99,6 +106,7 @@
     }
   }
 
+  // Creates an OPFS-backed output sink, falling back to in-memory Blob chunks.
   async function createSink(downloadId) {
     try {
       const root = await navigator.storage.getDirectory();
@@ -119,6 +127,7 @@
     }
   }
 
+  // Hands the completed file to Chrome's download API and cleans its temporary URL.
   function startDownload(blob, filename, sink) {
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -134,6 +143,7 @@
     }, 60000);
   }
 
+  // Fetches stream or direct resources sequentially in validated byte ranges.
   async function downloadByRanges(media, downloadId, controller, onProgress) {
     const signal = controller.signal;
     const sink = await createSink(downloadId);
@@ -195,6 +205,7 @@
     } catch (error) { await sink.cleanup(); throw error; }
   }
 
+  // Reads a page-owned Blob in slices and reports incremental transfer progress.
   async function downloadBlob(media, downloadId, controller, onProgress) {
     const signal = controller.signal;
     const info = await withRetry(() => bridgeRequest("BLOB_INFO", { url: media.url, start: 0, downloadId }, signal), signal, "Blob read");
@@ -222,6 +233,7 @@
     } catch (error) { await sink.cleanup(); throw error; }
   }
 
+  // Coordinates source selection, cancellation, progress, and final file saving.
   async function downloadMedia(media, onProgress, externalSignal = null) {
     if (!media || !["stream", "blob", "direct"].includes(media.sourceType)) throw new Error("Unsupported media source");
     const downloadId = crypto.randomUUID();
@@ -247,6 +259,7 @@
     }
   }
 
+  // Aborts a running download and notifies the page bridge to stop reading.
   function cancelDownload(downloadId) {
     const controller = downloads.get(downloadId);
     if (!controller) return false;

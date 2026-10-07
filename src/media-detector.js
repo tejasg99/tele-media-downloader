@@ -25,16 +25,19 @@
   const SUPPORTED = new Set(Object.keys(EXTENSIONS));
   const MESSAGE_SELECTOR = MESSAGE_SELECTORS.join(",");
 
+  // Rejects DOM nodes that cannot be interacted with or seen in the active chat.
   function isVisible(element) {
     return !!element && element.isConnected && element.getClientRects().length > 0 &&
       getComputedStyle(element).visibility !== "hidden" && element.getAttribute("aria-hidden") !== "true";
   }
 
+  // Filters out emoji, text rendering, and other non-media contexts.
   function isExcluded(element, root) {
     const excluded = element.closest(EXCLUDED_UI_SELECTOR);
     return !!excluded && excluded !== root;
   }
 
+  // Locates Telegram's currently open conversation for scoped discovery.
   function findActiveConversationRoot() {
     for (const selector of ACTIVE_ROOT_SELECTORS) {
       const candidates = document.querySelectorAll(selector);
@@ -48,6 +51,7 @@
     return null;
   }
 
+  // Finds the message node that owns a media element.
   function findMessageContainer(element, root) {
     if (!element || !root || !root.contains(element) || isExcluded(element, root)) return null;
     let message = element.closest(MESSAGE_SELECTOR);
@@ -58,6 +62,7 @@
     return message;
   }
 
+  // Maps a URL or MIME hint to a supported media category.
   function resourceKind(value) {
     try {
       const url = new URL(value, location.href);
@@ -67,6 +72,7 @@
     } catch (_) { return "unknown"; }
   }
 
+  // Infers a known MIME type from a resource filename extension.
   function mimeFromUrl(value) {
     try {
       const extension = new URL(value, location.href).pathname.toLowerCase().match(/\.([a-z0-9]{1,8})$/)?.[1];
@@ -74,6 +80,7 @@
     } catch (_) { return ""; }
   }
 
+  // Collects direct and nested source URLs advertised by a video element.
   function getVideoCandidates(video) {
     const candidates = [];
     if (video.currentSrc) candidates.push({ url: video.currentSrc, mimeType: video.getAttribute("type") || "" });
@@ -84,6 +91,7 @@
     return candidates;
   }
 
+  // Validates a candidate URL and MIME type before exposing it to downloads.
   function validSource(value, element, intendedType, declaredMime = "") {
     if (!value || !element) return null;
     let url;
@@ -103,12 +111,14 @@
     return { url, sourceType, mimeType: mimeType || "application/octet-stream" };
   }
 
+  // Distinguishes regular videos from Telegram animations.
   function classifyVideo(video, message) {
     const animationHint = message.matches("[data-entity-type='Animation'],[data-media-type='animation'],[class*='animation'],[class*='gif']") ||
       !!message.querySelector("[data-entity-type='Animation'],[data-media-type='animation'],[class*='animation'],[class*='gif']");
     return animationHint ? "animation" : "video";
   }
 
+  // Detects video thumbnails that need Telegram's viewer to reveal a source.
   function isLazyVideoPlaceholder(element) {
     if (!(element instanceof HTMLImageElement) || !element.classList.contains("media-photo")) return false;
     const container = element.closest(GROUPED_ITEM_SELECTOR) || element.closest(".attachment.media-container");
@@ -119,6 +129,7 @@
     return hasPlayControl && hasDuration && !hasVideo ? container : null;
   }
 
+  // Chooses a useful filename from Telegram metadata or the MIME type.
   function filenameFromElement(element, mimeType) {
     const candidates = [element.getAttribute("download"), element.getAttribute("data-filename"), element.getAttribute("title")];
     for (const candidate of candidates) {
@@ -127,6 +138,7 @@
     return `${Date.now()}.${EXTENSIONS[mimeType] || "bin"}`;
   }
 
+  // Normalizes a detected resource into the descriptor used by the downloader.
   function makeDescriptor(element, message, mediaType, resolved = null, extra = {}) {
     const source = resolved || null;
     const type = mediaType;
@@ -141,6 +153,7 @@
     });
   }
 
+  // Detects one element and returns its supported media descriptor, if any.
   function detect(element, root = findActiveConversationRoot()) {
     if (!element || !root) return null;
     const message = findMessageContainer(element, root);
@@ -190,6 +203,7 @@
     return null;
   }
 
+  // Lists distinct message containers below a conversation or changed node.
   function messageContainersWithin(root) {
     if (!root) return [];
     const messages = [];
@@ -198,6 +212,7 @@
     return [...new Set(messages.filter((message) => !message.matches(GROUPED_ITEM_SELECTOR)))];
   }
 
+  // Finds album item containers that need a grouped download action.
   function findGroupedMediaItems(root) {
     if (!root) return [];
     const items = [];
@@ -206,6 +221,7 @@
     return [...new Set(items)];
   }
 
+  // Reports each supported media element and album found inside one message.
   function scanMessage(message, root, callback) {
     if (!message || isExcluded(message, root)) return;
     const groupedItems = findGroupedMediaItems(message);
@@ -232,6 +248,7 @@
     });
   }
 
+  // Scans the active conversation or only the messages affected by a DOM change.
   function scan(changedNode, callback) {
     const root = findActiveConversationRoot();
     if (!root) return root;

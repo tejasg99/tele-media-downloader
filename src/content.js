@@ -21,17 +21,21 @@
   let receivedQueueUpdate = false;
   const M = { ADD:"DOWNLOAD_ADD", ADD_MANY:"DOWNLOAD_ADD_MANY", CANCEL:"DOWNLOAD_CANCEL", RETRY:"DOWNLOAD_RETRY", CLEAR:"DOWNLOAD_CLEAR_COMPLETED", GET:"QUEUE_GET_STATE", UPDATED:"QUEUE_STATE_UPDATED", EXECUTE:"DOWNLOAD_EXECUTE", PROGRESS:"DOWNLOAD_PROGRESS", COMPLETE:"DOWNLOAD_COMPLETE", FAIL:"DOWNLOAD_FAIL", CANCELLED:"DOWNLOAD_CANCELLED" };
 
+  // Returns a stable identifier for one Telegram album/message group.
   function getGroupId(message) {
     if(!message)return null;
     const stable=message.getAttribute("data-message-id")||message.getAttribute("data-mid");if(stable)return `${contentInstanceId}:message:${stable}`;
     let id=groupIds.get(message);if(!id){id=crypto.randomUUID();groupIds.set(message,id);}return id;
   }
+  // Identifies one media item within its grouped message.
   function groupedItemId(media) {
     const item=media.containerElement;if(!item)return null;
     const stable=item.getAttribute("data-mid")||item.getAttribute("data-message-id")||item.getAttribute("data-media-id")||"item";
     return `${stable}:${[...media.message.querySelectorAll(GROUP_SELECTOR)].indexOf(item)}`;
   }
+  // Produces a compact fallback identifier for media without Telegram IDs.
   function shortHash(value) { let hash=2166136261;for(let i=0;i<value.length;i++)hash=Math.imul(hash^value.charCodeAt(i),16777619);return (hash>>>0).toString(16); }
+  // Builds a stable key used to match a chat button with queue jobs.
   function mediaKey(media) {
     if(media.grouped&&media.message)return `album:${getGroupId(media.message)}:${groupedItemId(media)}`;
     const mediaId=media.element?.getAttribute("data-media-id");if(mediaId)return `media:${mediaId}`;
@@ -39,7 +43,9 @@
     if(messageId&&media.message){const candidates=[...media.message.querySelectorAll("video,img,a[href]")],index=candidates.indexOf(media.element);if(index>=0)return `message:${messageId}:${media.element?.tagName?.toLowerCase()||"media"}:${index}`;if(media.url)return `message:${messageId}:${shortHash(media.url)}`;}
     let key=keysByElement.get(media.element); if(!key){key=crypto.randomUUID();keysByElement.set(media.element,key);} return key;
   }
+  // Sends a typed request to the extension service worker.
   function send(type, fields = {}, callback) { chrome.runtime.sendMessage({ type, ...fields }, response => { void chrome.runtime.lastError; callback?.(response); }); }
+  // Removes DOM references and serializes metadata for the background queue.
   function serialMedia(media) {
     let groupId=null,itemId=null;
     if(media.grouped&&media.message){groupId=getGroupId(media.message);itemId=groupedItemId(media);}
@@ -47,11 +53,13 @@
     const requiresViewer=videoLike&&(!!media.lazyVideo||!sourceFromVideo(media.element,media.type));
     return { type:media.type, filename:media.filename, mimeType:media.mimeType, sourceType:media.sourceType, url:media.url, size:media.size, requiresViewer, groupId, itemId, mediaId:media.element?.getAttribute("data-media-id") || media.containerElement?.getAttribute("data-media-id") || null, messageId:media.message?.getAttribute("data-message-id") || media.message?.getAttribute("data-mid") || null };
   }
+  // Creates the shared SVG icon element for a chat download button.
   function ensureButtonVisual(button) {
     let icon=button.querySelector(".tg-downloader-icon");
     if(!icon){icon=document.createElementNS(SVG_NS,"svg");icon.classList.add("tg-downloader-icon");icon.setAttribute("viewBox","0 0 24 24");icon.setAttribute("aria-hidden","true");button.appendChild(icon);}
     return {icon};
   }
+  // Draws the download or cancel glyph for the button's current state.
   function setButtonVisual(button,status) {
     const visual=ensureButtonVisual(button),active=status==="queued"||status==="downloading";
     const icon=active?"cancel":"download";
@@ -60,6 +68,7 @@
     for(const d of paths[icon]||[]){const path=document.createElementNS(SVG_NS,"path");path.setAttribute("d",d);visual.icon.appendChild(path);}
     visual.icon.style.display="block";
   }
+  // Applies queue status and accessible labels to an individual media button.
   function setButtonState(key, status, job = null) {
     const entry = buttonByKey.get(key); if (!entry?.button.isConnected) return;
     const previousStatus=entry.button.dataset.status;
@@ -70,11 +79,13 @@
     entry.button.title = status === "queued" || status === "downloading" ? "Cancel download" : status === "completed" ? "Download again" : "Download";
     entry.button.setAttribute("aria-label", entry.button.title);
   }
+  // Reflects active album jobs on the grouped download/cancel button.
   function renderAlbumState(groupId,button,jobs) {
     const active=jobs.filter(job=>job.status==="queued"||job.status==="downloading");activeAlbumJobIds.set(groupId,active.map(job=>job.id));
     const status=active.some(job=>job.status==="downloading")?"downloading":active.length?"queued":"idle";
     button.dataset.status=status;setButtonVisual(button,status);button.title=active.length?"Cancel album download":"Download album";button.setAttribute("aria-label",button.title);
   }
+  // Reconciles queue snapshots with button state while ignoring stale updates.
   function applyQueueState(state) {
     const jobs=state?.jobs||[],latest=new Map();
     for(const job of jobs){
@@ -110,6 +121,7 @@
     if (message?.type === M.UPDATED) applyQueueState(message.state);
   });
 
+  // Injects the page-world bridge required to read Telegram-owned resources.
   function injectBridge() {
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("src/page-bridge.js");
@@ -118,16 +130,19 @@
     (document.head || document.documentElement).appendChild(script);
   }
 
+  // Checks whether a viewer element is currently visible and usable.
   function isVisible(element) {
     if (!element || !element.isConnected || element.getClientRects().length === 0 || element.getAttribute("aria-hidden") === "true") return false;
     const style = getComputedStyle(element);
     return style.display !== "none" && style.visibility !== "hidden";
   }
 
+  // Returns the visible Telegram media viewer, if one is open.
   function findViewer() {
     return [...document.querySelectorAll(VIEWER_SELECTOR)].find(isVisible) || null;
   }
 
+  // Serializes jobs that must open and control Telegram's shared media viewer.
   function acquireViewerLock(signal) {
     const previous=viewerLockTail;let unlock;const slot=new Promise(resolve=>{unlock=resolve;});
     viewerLockTail=previous.then(()=>slot);
@@ -140,6 +155,7 @@
     });
   }
 
+  // Finds visible video elements inside the viewer's active media layers.
   function viewerVideos(viewer) {
     const aspecter = viewer.querySelector(".media-viewer-aspecter");
     if (aspecter) {
@@ -154,16 +170,21 @@
     return [...viewer.querySelectorAll("video")].filter(isVisible);
   }
 
+  // Identifies a video by its current source to reject stale viewer content.
   function videoSignature(video) { return video.currentSrc || video.src || video.querySelector("source[src]")?.src || ""; }
+  // Collects Telegram identifiers that can associate a message with viewer media.
   function mediaAssociations(media) {
     const values=new Set();
     for(const element of [media.element,media.containerElement]) if(element) for(const attr of ["data-mid","data-message-id","data-media-id"]) {const value=element.getAttribute(attr);if(value)values.add(value);}
     if(!values.size&&!media.grouped&&media.message)for(const attr of ["data-mid","data-message-id"]){const value=media.message.getAttribute(attr);if(value)values.add(value);}
     return values;
   }
+  // Collects Telegram identifiers attached to a video in the viewer.
+  // Collects Telegram identifiers attached to a video in the viewer.
   function viewerAssociations(video, viewer) {
     const values=new Set();for(let node=video;node&&node!==viewer;node=node.parentElement)for(const attr of ["data-mid","data-message-id","data-media-id"]){const value=node.getAttribute?.(attr);if(value)values.add(value);}return values;
   }
+  // Ranks candidate videos by active state, playback, and position in the viewer.
   function viewerVideoRank(video,viewer) {
     const active=video.closest("[aria-current='true'],[data-active='true'],.active,.current")?100000:0;
     const playing=!video.paused&&!video.ended?10000:0;
@@ -172,6 +193,7 @@
     return active+playing-distance;
   }
 
+  // Selects the first validated downloadable source from a viewer video.
   function sourceFromVideo(video, mediaType) {
     for (const candidate of window.TelegramMediaDetector.getVideoCandidates(video)) {
       try {
@@ -182,6 +204,7 @@
     return null;
   }
 
+  // Waits for the viewer to expose the video source associated with a job.
   function waitForViewerVideo(mediaType, timeoutMs, signal, viewerBefore = null, media = null) {
     const previousSources=new Set(viewerBefore?viewerVideos(viewerBefore).map(videoSignature).filter(Boolean):[]);
     const expectedIds=media?mediaAssociations(media):new Set();
@@ -242,6 +265,7 @@
     });
   }
 
+  // Opens Telegram's viewer when needed and resolves the actual video resource.
   async function resolveVideoSource(media, signal, onViewerActivated = () => {}) {
     if (media.lazyVideo) {
       const activationTarget = media.activationTarget;
@@ -285,6 +309,7 @@
     };
   }
 
+  // Finds Telegram's close control so downloader-owned viewers can be closed.
   function findViewerCloseControl(viewer) {
     const selectors = [
       "button[aria-label*='close' i]", "button[title*='close' i]", "[role='button'][aria-label*='close' i]",
@@ -297,6 +322,7 @@
     return null;
   }
 
+  // Waits briefly for Telegram to remove or hide a closing viewer.
   function waitForViewerClosed(viewer, timeoutMs = 2000) {
     return new Promise((resolve) => {
       if (!isVisible(viewer)) return resolve(true);
@@ -316,6 +342,7 @@
     });
   }
 
+  // Closes and verifies a viewer that this download flow opened itself.
   async function closeDownloaderOwnedViewer(viewer) {
     if (!viewer || !isVisible(viewer)) return;
     window.TelegramMediaLogger?.debug("Closing downloader-owned viewer");
@@ -334,6 +361,7 @@
     else window.TelegramMediaLogger?.warn("Downloader-owned viewer did not close before timeout");
   }
 
+  // Removes stale button bookkeeping when its media leaves the active chat.
   function detachButton(element) {
     const entry = buttons.get(element);
     if (!entry) return;
@@ -344,6 +372,7 @@
     trackedMedia.delete(element);
   }
 
+  // Creates or refreshes the individual download control for a media element.
   function attachButton(element, descriptor) {
     if (buttons.has(element) || element.hasAttribute("data-tg-downloader-attached")) return;
     const parent = descriptor.grouped ? descriptor.containerElement : element.parentElement;
@@ -367,6 +396,7 @@
     const key=mediaKey(descriptor);entry.key=key;runtimeMedia.set(key,descriptor);buttonByKey.set(key,entry);
     const latest=latestJobByMediaKey.get(key);if(latest){state.jobId=latest.id;button.dataset.jobId=latest.id;setButtonState(key,latest.status,latest);}
 
+    // Routes chat-button clicks to cancellation or a new queue request.
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -385,12 +415,14 @@
     if (descriptor.grouped) attachAlbumButton(descriptor.message);
   }
 
+  // Adds one album control that queues or cancels all detected album items.
   function attachAlbumButton(message) {
     if(!message || albumButtons.has(message)) return;
     const button=document.createElement("button"); button.type="button"; ensureButtonVisual(button); button.title="Download album"; button.setAttribute("aria-label","Download album"); button.setAttribute("data-tg-downloader-button","true"); button.className="tg-media-download-button";button.dataset.status="idle";setButtonVisual(button,"idle");
     button.style.cssText="display:flex;margin:5px auto 0;width:32px;height:32px;border:0;border-radius:50%;background:#2481cc;color:#fff;cursor:pointer;box-shadow:0 1px 4px #0005;z-index:2147483647";
     if(!message.querySelector(GROUP_SELECTOR))return;
     message.appendChild(button); albumButtons.set(message,button);const groupId=getGroupId(message);albumButtonById.set(groupId,button);renderAlbumState(groupId,button,[...latestJobByMediaKey.values()].filter(job=>job.groupId===groupId));
+    // Queues every supported album item or cancels the active batch.
     button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();const groupId=getGroupId(message),activeIds=activeAlbumJobIds.get(groupId)||[];if(activeIds.length){for(const id of activeIds)send(M.CANCEL,{id});return;}const items=[],seen=new Set(),names=new Map();
       for(const item of message.querySelectorAll(GROUP_SELECTOR)){
         const candidate=[...item.querySelectorAll("video,img,a[href]")].find(el=>buttons.has(el)&&el.closest(GROUP_SELECTOR)===item);
@@ -407,6 +439,7 @@
   }
 
   const GROUP_SELECTOR=".album-item.grouped-item";
+  // Resolves, downloads, reports, and cleans up one background-scheduled job.
   async function executeJob(message) {
     const descriptor=runtimeMedia.get(message.mediaKey); if(!descriptor){send(M.FAIL,{id:message.id,error:"Media no longer available"});return;}
     const controller=new AbortController(), running={controller,downloadId:null}; runningJobs.set(message.id,running);
@@ -420,6 +453,7 @@
       if(media.type==="video"||media.type==="animation"){const resolved=await resolveVideoSource(media,controller.signal,()=>{running.viewerActivationStarted=true;});media=resolved.media;if(resolved.viewerOpenedByDownloader)ownedViewer=resolved.viewer;}
       if(!media.url||!["stream","blob","direct"].includes(media.sourceType))throw new Error("No downloadable source");
       let lastUpdate=-Infinity,lastSampleAt=null,lastSampleBytes=0,lastDone=0,lastTotal=media.size||null,lastSpeed=null;
+      // Tracks transfer progress and forwards throttled updates to the manager.
       const result=await window.TelegramMediaDownloader.downloadMedia(media,(percent,done,total,downloadId)=>{
         if(downloadId)running.downloadId=downloadId;if(done==null)return;
         const now=performance.now(),dt=lastSampleAt==null?0:(now-lastSampleAt)/1000,db=done-lastSampleBytes;
@@ -439,12 +473,14 @@
     send(outcome==="completed"?M.COMPLETE:outcome==="cancelled"?M.CANCELLED:M.FAIL,{id:message.id,error:failure?.message||null});
   }
 
+  // Detaches controls for media outside Telegram's currently active conversation.
   function discardOutsideRoot(root) {
     for (const element of trackedMedia) {
       if (!element.isConnected || !root || !root.contains(element)) detachButton(element);
     }
   }
 
+  // Cleans up media controls when a Telegram DOM subtree is removed.
   function detachRemovedSubtree(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     if (buttons.has(node)) detachButton(node);
@@ -452,6 +488,7 @@
       .forEach(detachButton);
   }
 
+  // Scans changed DOM and updates the active conversation's media controls.
   function scan(node) {
     const newRoot = window.TelegramMediaDetector.scan(node, attachButton);
     if (newRoot !== activeRoot) {

@@ -1,12 +1,17 @@
 "use strict";
+// Sends queue actions and state requests to the service worker.
 const send = (type, fields = {}, callback) => chrome.runtime.sendMessage({ type, ...fields }, callback);
+// Formats byte counts for the queue's human-readable status text.
 const formatBytes = n => n == null ? "Size unknown" : `${(n / 1048576).toFixed(1)} MB`;
+// Formats a transfer rate for active downloads.
 const formatRate = n => n ? `${(n / 1048576).toFixed(1)} MB/s` : "";
+// Builds a labeled action control for a queue job.
 function actionButton(label, icon, onClick) {
   const button=document.createElement("button");button.className="action-button";button.type="button";
   const image=document.createElement("img");image.src=chrome.runtime.getURL(icon);image.alt="";image.setAttribute("aria-hidden","true");button.append(image,document.createTextNode(label));
   button.setAttribute("aria-label",label);button.addEventListener("click",onClick);return button;
 }
+// Rebuilds the Side Panel from the latest queue snapshot.
 function render(state) {
   const host = document.getElementById("jobs"); host.replaceChildren();
   document.getElementById("summary").textContent = `${state.activeCount} active · ${state.queuedCount} queued`;

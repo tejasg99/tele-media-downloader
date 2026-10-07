@@ -1,5 +1,6 @@
 importScripts("messages.js", "download-manager.js");
 const manager = new DownloadManager();
+// Broadcasts safe queue snapshots to the Side Panel and each owning Telegram tab.
 manager.subscribe(state => {
   // runtime.sendMessage serves extension pages such as the Side Panel. Content
   // scripts receive queue updates through tabs.sendMessage instead.
@@ -14,6 +15,7 @@ manager.subscribe(state => {
     chrome.tabs.sendMessage(tabId,{type:DownloadMessages.UPDATED,state:tabState},()=>void chrome.runtime.lastError);
   }
 });
+// Routes queue actions and download lifecycle updates to the manager.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   switch (message?.type) {
@@ -38,4 +40,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return message?.type === DownloadMessages.GET_STATE || message?.type === DownloadMessages.ADD || message?.type === DownloadMessages.ADD_MANY;
 });
+// Opens the download queue when the user selects the extension action.
 chrome.action.onClicked.addListener(() => chrome.sidePanel.open({ windowId: chrome.windows.WINDOW_ID_CURRENT }));
